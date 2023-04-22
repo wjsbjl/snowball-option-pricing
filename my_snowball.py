@@ -81,7 +81,7 @@ class my_plot():  # 后面再封装一些其他函数
         plt.savefig(f"./result/{self.plot_name[3]}_bar_plot.jpg", bbox_inches='tight', dpi=300, pad_inches=0.0)
         
 class my_snowball(object):
-    def __init__(self,S0, position, margin, sigma, r_riskfree, q, knock_out_coupon, hold_coupon, T_years, knock_in_out_df,start_date):
+    def __init__(self,S0, position, margin, sigma, r_riskfree, q, knock_out_coupon, hold_coupon, T_years, num_simulations, knock_in_out_df,start_date):
         self.S0 = S0
         self.position = position
         self.margin=margin
@@ -93,11 +93,12 @@ class my_snowball(object):
         self.T_years=T_years
         self.knock_in_out_df=knock_in_out_df
         self.start_date = pd.to_datetime(start_date)
+        self.num_simulations = int(num_simulations)
         
         end_date = self.start_date + pd.DateOffset(years=T_years)
         self.date_index = pd.date_range(start=start_date, end=end_date, freq='D')
         
-        self.stock_price_array = self.simulation(sample_size = 10000, steps = 365)
+        self.stock_price_array = self.simulation(steps = 365)
         self.stock_price_df = pd.DataFrame(self.stock_price_array, index = self.date_index)
 
         self.snowball_status = self.price2status()
@@ -106,19 +107,19 @@ class my_snowball(object):
 
         self.snowball_sttc_df = self.snowball_sttc()
 
-    def simulation(self, sample_size = 10000, steps = 365):
+    def simulation(self,  steps = 365):
         delta_t = 1/steps
-        Spath = np.zeros((self.T_years * steps + 1, sample_size))
+        Spath = np.zeros((self.T_years * steps + 1, self.num_simulations))
         Spath[0,:] = self.S0
 
         for t in trange(1, self.T_years * steps + 1):
-            z = np.random.standard_normal(sample_size)
-            middle1 = Spath[t-1, 0:sample_size] * np.exp((self.r_riskfree - self.q - 0.5 * self.sigma ** 2) * delta_t + self.sigma * np.sqrt(delta_t) * z)
+            z = np.random.standard_normal(self.num_simulations)
+            middle1 = Spath[t-1, 0:self.num_simulations] * np.exp((self.r_riskfree - self.q - 0.5 * self.sigma ** 2) * delta_t + self.sigma * np.sqrt(delta_t) * z)
             uplimit = Spath[t-1,:] * 1.1 # 涨幅限制
             lowlimit = Spath[t-1,:] * 0.9 # 跌幅限制
             temp = np.where(uplimit < middle1, uplimit, middle1)
             temp = np.where(lowlimit > middle1, lowlimit, temp)
-            Spath[t, 0:sample_size] = temp
+            Spath[t, 0:self.num_simulations] = temp
 
         return Spath
 
@@ -144,8 +145,10 @@ class my_snowball(object):
         payoff_lst = []
         time_out_lst = []
         knock_status_lst = []
-
-        for clmn in self.snowball_status.columns:
+        clmn_lst = self.snowball_status.columns
+        # TODO 这里应该可以提高效率
+        for i in trange(len(clmn_lst)):
+            clmn = clmn_lst[i]
             if self.snowball_status.loc[:,clmn].max() == 1: # 敲出吃利息
                 time_delta = self.snowball_status.loc[:,clmn].idxmax() - self.start_date# 从这个时候贴现回来
                 time_out = time_delta.days/365
@@ -153,7 +156,7 @@ class my_snowball(object):
                 knock_status = '敲出'
             elif self.snowball_status.loc[:,clmn].min() == -1: # 敲入赔期权
                 time_out = self.T_years
-                payoff = min(self.stock_price_df.loc[:,clmn][-1]-S0,0) * np.exp(-self.r_riskfree * time_out) * self.margin
+                payoff = min(self.stock_price_df.loc[:,clmn][-1]-self.S0,0) * np.exp(-self.r_riskfree * time_out) * self.margin
                 knock_status = '敲入'
             else:
                 time_out = self.T_years
@@ -173,7 +176,7 @@ class my_snowball(object):
         self.snowball_df = snowball_df
         snowball_descriptive_df = snowball_df.groupby('knock_status').mean()
         snowball_distribution_df = (snowball_df['knock_status'].value_counts()/len(snowball_df)).rename('percent')
-        return pd.concat([snowball_descriptive_df,snowball_distribution_df],axis=1)
+        return pd.concat([snowball_descriptive_df,snowball_distribution_df],axis=1).round(4)
 
 
     def snowball_payoff_hist_plot(self):
@@ -190,16 +193,16 @@ if __name__ == '__main__':
     knock_out_coupon = 0.16
     hold_coupon = 0.16
     T_years = 2
-    
-    date_lst = ['20210406', '20210506', '20210607', '20210705', '20210805', '20210906', '20211008', '20211105', '20211206', '20220105', '20220207', '20220307', '20220406', '20220505', '20220606', '20220705', '20220805', '20220905', '20221010', '20221107', '20221205', '20230105']
-    date_lst = [datetime.strptime(date, '%Y%m%d') for date in date_lst]
-    stepdown_lst = [1.000,1.000, 1.000, 0.995, 0.990, 0.985, 0.980, 0.975, 0.970, 0.965, 0.960, 0.955, 0.950, 0.945, 0.940, 0.935, 0.930, 0.925, 0.920, 0.915, 0.910, 0.905]
+    num_simulations = 3e5
+
+    start_date = pd.to_datetime('2021-01-05') + pd.DateOffset(months=4)
+    end_date = start_date + pd.DateOffset(years=T_years)
+    date_lst = pd.date_range(start=start_date, end=end_date, freq='30D')
+
     knock_in_barrier = 0.75
-    stepdown = 0.005 # 这是逐级下调雪球产品，展示敲出期的变化规律
-    stepdown_lst = [1.000] * 2 + [round(1 - stepdown * i,3) for i in range(20)]
-    knock_in_out_df = pd.DataFrame(index = date_lst, data = {'knock_in_lst': knock_in_barrier, 'knock_out_lst': stepdown_lst})
-    
-    start_date = '2021-01-05'
+    knock_out_barrier = 1.03
+
+    knock_in_out_df = pd.DataFrame(index = date_lst, data = {'knock_in_lst': knock_in_barrier, 'knock_out_lst': knock_out_barrier})
     
     snowball_sim = my_snowball(S0, position, margin, sigma, r_riskfree, q, knock_out_coupon, hold_coupon, T_years, knock_in_out_df,start_date)
     
